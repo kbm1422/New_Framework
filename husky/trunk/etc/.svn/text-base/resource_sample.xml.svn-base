@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ResourceConfig>
+    <Resources>
+        <TestBench name="SAMPLE">
+            <TxUnit name="SRC1">
+                <!--
+                moduleid:       required
+                tcpport:        optional, default to random a avaiable port from 40000 to 65535
+                ap_moduleid:    optional, if indicate, will create a BAConnection, otherwise GEN3Connection
+                -->
+                <Device moduleid="M3T" tcpport="40201" ap_moduleid=""/>
+
+                <!--
+                name: required
+                host: optional
+                -->
+                <AVProducer name="QD" host="192.168.1.123"/>
+
+                <!--
+                host:       required
+                outlet:     required
+                username:   optional, default is admin
+                password:   optional, default is sqa
+                -->
+                <PowerSwitchOutlet host="192.168.1.110" outlet="1" username="admin" password="sqa"/>
+            </TxUnit>
+            <RxUnit name="SINK1" >
+                <Device moduleid="M3T"/>
+                <AVConsumer name="SONY"/>
+                <PowerSwitchOutlet host="192.168.1.10" outlet="2" username="admin" password="sqa"/>
+            </RxUnit>
+        </TestBench>
+    </Resources>
+</ResourceConfig>

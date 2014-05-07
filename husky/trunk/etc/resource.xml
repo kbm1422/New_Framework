@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ResourceConfig>
+    <Resources>
+        <TestBench name="SH-TB-PAIR1">
+            <TxUnit name="SRC1">
+                <Device moduleid="M3T" tcpport="40101"/>
+                <AVProducer name="SHINCO"/>
+                <PowerSwitchOutlet host="192.168.1.110" outlet="1"/>
+            </TxUnit>
+            <RxUnit name="SINK1" >
+                <Device moduleid="M3R" tcpport="40102"/>
+                <AVConsumer name="PANASONIC"/>
+                <PowerSwitchOutlet host="192.168.1.110" outlet="2"/>
+            </RxUnit>
+        </TestBench>
+    </Resources>
+</ResourceConfig>

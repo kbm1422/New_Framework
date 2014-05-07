@@ -1,0 +1,213 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+import logging
+logger = logging.getLogger(__name__)
+
+import os
+import time
+import inspect
+import unittest
+import threading
+
+import simg.io.file as fs
+from .context import TestContextManager
+
+
+class TestSuiteResultRecord(object):
+    def __init__(self, suiteid=None, name=None):
+        self.suiteid = suiteid
+        self.name = name
+        self.subrecords = []
+
+    def addSubTestResultRecord(self, record):
+        self.subrecords.append(record)
+
+    def getLastTestCaseResultRecord(self):
+        lastSubRecord = self.subrecords[-1]
+        if isinstance(lastSubRecord, TestSuiteResultRecord):
+            return lastSubRecord.getLastTestCaseResultRecord()
+        else:
+            return lastSubRecord
+
+
+class TestSuite(unittest.TestSuite):
+    def __init__(self, tests=(), suiteid=None, name=None):
+        unittest.TestSuite.__init__(self, tests)
+        self.suiteid = suiteid
+        self.name = name if name else self.__class__.__name__
+        self.logdir = None
+        self.record = TestSuiteResultRecord(self.suiteid, self.name)
+        self._toplevel = False
+
+    def run(self, result, debug=False):
+        context = TestContextManager().getCurrentContext()
+        context.curtsuite = self
+        if self.logdir is None:
+            self.logdir = os.path.join(context.logdir, self.name)
+        fs.mkpath(self.logdir)
+
+        self._toplevel = False
+        if getattr(result, '_testRunEntered', False) is False:
+            result._testRunEntered = self._toplevel = True
+
+        self._runTests(result, debug)
+
+        if self._toplevel:
+            self._tearDownPreviousClass(None, result)
+            self._handleModuleTearDown(result)
+            result._testRunEntered = False
+
+            result.suiteRecords.append(self.record)
+        return result
+
+    def _runTests(self, result, debug):
+        for test in self:
+            while not result.shouldStop and result.shouldPause:
+                time.sleep(0.2)
+            if result.shouldStop:
+                break
+
+            if isTestSuite(test):
+                self._runTestSuite(test, result, debug)
+            else:
+                self._runTestCase(test, result, debug)
+
+    def _runTestSuite(self, test, result, debug):
+        test.logdir = os.path.join(self.logdir, test.name)
+        self._runTest(test, result, debug)
+
+    def _runTestCase(self, test, result, debug):
+        self._tearDownPreviousClass(test, result)
+        self._handleModuleFixture(test, result)
+        self._handleClassSetUp(test, result)
+        result._previousTestClass = test.__class__
+
+        if getattr(test.__class__, '_classSetupFailed', False) or getattr(result, '_moduleSetUpFailed', False):
+            return
+
+        test.logdir = self.logdir
+        test.cycleindex = self.getTestCycleIndex(test)
+        test.logname = os.path.join(test.logdir, "%s_%s.log" % (test.name, test.cycleindex))
+        hdlr = self.createTestLogHandler(test)
+        resource = TestContextManager().getCurrentContext().resource
+        try:
+            logger.debug("START TestCase: %s", test.name)
+            if hasattr(resource, "doActionBeforeTest"):
+                resource.doActionBeforeTest(test)
+            starttime = time.time()
+            self._runTest(test, result, debug)
+            endtime = time.time()
+            test.record.timecost = round(endtime - starttime, 2)
+        finally:
+            if hasattr(resource, "doActionAfterTest"):
+                resource.doActionAfterTest(test)
+            logger.debug("FINISH TestCase: %s", test.name)
+            self.removeTestLogHandler(hdlr)
+        self._adjustTestCaseLogPath(test)
+
+    def _adjustTestCaseLogPath(self, test):
+        newlogdir = None
+        if test.record.status == test.record.FAILED:
+            newlogdir = os.path.join(self.logdir, "failed")
+        elif test.record.status == test.record.ERRONEOUS:
+            newlogdir = os.path.join(self.logdir, "erroneous")
+        elif test.record.status == test.record.WARNING:
+            newlogdir = os.path.join(self.logdir, "warning")
+        else:
+            pass
+        if newlogdir is not None:
+            fs.mkpath(newlogdir)
+            test.logdir = newlogdir
+            fs.move(test.logname, newlogdir)
+            test.logname = os.path.join(newlogdir, os.path.basename(test.logname))
+            for index in range(len(test.extlognames)):
+                extlogname = test.extlognames[index]
+                fs.move(extlogname, newlogdir)
+                test.extlognames[index] = os.path.join(newlogdir, os.path.basename(extlogname))
+
+    def _runTest(self, test, result, debug):
+        if debug:
+            test.debug()
+        else:
+            test.run(result)
+            self.record.addSubTestResultRecord(test.record)
+
+    def getTestCycleIndex(self, test):
+        index = 0
+        for t in self._tests:
+            if t == test:
+                index += 1
+            if t is test:
+                break
+        return index
+
+    def createTestLogHandler(self, test):
+        class LogFilter(logging.Filter):
+            def __init__(self, frn):
+                """
+                @note:
+                Set the current suite thread id into filter, it will be used by logging handler later.
+                """
+                try:
+                    self.tid = threading.current_thread().ident
+                except AttributeError:
+                    import thread
+                    self.tid = thread.get_ident()
+                self.frn = frn
+
+            def filter(self, record):
+                """
+                @note:
+                Logging handler call this method to determine whether the LogRecord should be printed.
+                LogRecord.thread stored the thread id which generate the LogRecord.
+                We compare the current suite thread with the log record generator thread to determine whether this record belong with current thread.
+                """
+                if record.thread == self.tid and (record.name == inspect.getmodule(test).__name__ or self.frn in record.name):
+                    return True
+                else:
+                    return False
+
+        context = TestContextManager().getCurrentContext()
+        hdlr = logging.FileHandler(test.logname)
+        formatter = logging.Formatter(context.logfmt)
+        hdlr.setFormatter(formatter)
+
+        hdlr.addFilter(LogFilter(context.logfrn))
+        logging.getLogger().addHandler(hdlr)
+        return hdlr
+
+    def removeTestLogHandler(self, hdlr):
+        logging.getLogger().removeHandler(hdlr)
+        hdlr.close()
+
+
+class LinkedTestSuite(TestSuite):
+    """
+    @summary:
+    LinkedTestSuite include several test cases.
+    Each failed case will cause the whole suite failed, the following case in this suite will not be executed.
+    This is useful when the later case depends on the previous case's result
+    """
+    def _runTests(self, result, debug):
+        for test in self:
+            while not result.shouldStop and result.shouldPause:
+                time.sleep(0.2)
+            if result.shouldStop:
+                break
+            if isTestSuite(test):
+                self._runTestSuite(test, result, debug)
+            else:
+                self._runTestCase(test, result, debug)
+
+            lastrecord = self.record.getLastTestCaseResultRecord()
+            if lastrecord.type == lastrecord.FAILED or lastrecord.type == lastrecord.ERRONEOUS:
+                break
+
+
+def isTestSuite(test):
+    return isinstance(test, unittest.TestSuite) or issubclass(test.__class__, unittest.TestSuite)
+
+
+def isLinkedTestSuite(test):
+    return isinstance(test, LinkedTestSuite) or issubclass(test.__class__, LinkedTestSuite)
